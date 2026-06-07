@@ -5,14 +5,17 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
-	"github.com/aws/aws-sdk-go-v2/service/sts/types"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/aws-sdk-go-v2/service/sts/types"
+	smithyendpoints "github.com/aws/smithy-go/endpoints"
 )
 
 func die(msg string, err error) {
@@ -74,9 +77,14 @@ func getTokenCode(swampConfig *SwampConfig) string {
 	return cleanTokenCode(tokenCode)
 }
 
-func validateSessionToken(ctx context.Context, awsConfig aws.Config) bool {
-	svc := sts.NewFromConfig(awsConfig)
-	_, err := svc.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+func validateSessionToken(ctx context.Context, profile, region string, eusc bool) bool {
+	awsConfig, err := tryNewSessionOptions(ctx, profile, region)
+	if err != nil {
+		return false
+	}
+
+	svc := newSTSClient(awsConfig, eusc)
+	_, err = svc.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	return err == nil
 }
 
@@ -94,7 +102,7 @@ func guessCurrentProfile(swampConfig *SwampConfig) string {
 }
 
 func getSessionToken(ctx context.Context, swampConfig *SwampConfig, awsConfig aws.Config) *types.Credentials {
-	svc := sts.NewFromConfig(awsConfig)
+	svc := newSTSClient(awsConfig, swampConfig.eusc)
 	tokenCode := getTokenCode(swampConfig)
 	output, err := svc.GetSessionToken(ctx, &sts.GetSessionTokenInput{
 		DurationSeconds: aws.Int32(int32(swampConfig.intermediateDuration)),
@@ -117,7 +125,7 @@ func getBaseSessionOptions(ctx context.Context, swampConfig *SwampConfig) aws.Co
 }
 
 func newSessionOptions(ctx context.Context, profile, region string) aws.Config {
-	if cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region), config.WithSharedConfigProfile(profile)); err != nil {
+	if cfg, err := tryNewSessionOptions(ctx, profile, region); err != nil {
 		die("Error loading aws config", err)
 		return cfg
 	} else {
@@ -125,11 +133,48 @@ func newSessionOptions(ctx context.Context, profile, region string) aws.Config {
 	}
 }
 
+func tryNewSessionOptions(ctx context.Context, profile, region string) (aws.Config, error) {
+	return config.LoadDefaultConfig(ctx, config.WithRegion(region), config.WithSharedConfigProfile(profile))
+}
+
+type euscSTSEndpointResolver struct{}
+
+func (r euscSTSEndpointResolver) ResolveEndpoint(ctx context.Context, params sts.EndpointParameters) (smithyendpoints.Endpoint, error) {
+	region := ""
+
+	if params.Region != nil {
+		region = *params.Region
+	}
+
+	if region == "" {
+		region = "eusc-de-east-1"
+	}
+
+	endpointURL, err := url.Parse(fmt.Sprintf("https://sts.%s.amazonaws.eu", region))
+	if err != nil {
+		return smithyendpoints.Endpoint{}, err
+	}
+
+	return smithyendpoints.Endpoint{
+		URI: *endpointURL,
+	}, nil
+}
+
+func newSTSClient(awsConfig aws.Config, eusc bool) *sts.Client {
+	if !eusc {
+		return sts.NewFromConfig(awsConfig)
+	}
+
+	return sts.NewFromConfig(awsConfig, func(options *sts.Options) {
+		options.EndpointResolverV2 = euscSTSEndpointResolver{}
+	})
+}
+
 // validate session token and request a new one if it's invalid.
 // write target profile into .aws/credentials
 func ensureSessionTokenProfile(ctx context.Context, swampConfig *SwampConfig, pw *ProfileWriter) {
 	printer.Printf("Checking if profile %s is still valid\n", swampConfig.intermediateProfile)
-	if validateSessionToken(ctx, getIntermediateSessionOptions(ctx, swampConfig)) {
+	if validateSessionToken(ctx, swampConfig.intermediateProfile, swampConfig.region, swampConfig.eusc) {
 		printer.Printf("Session token for profile %s is still valid\n", swampConfig.intermediateProfile)
 	} else {
 		awsConfig := getBaseSessionOptions(ctx, swampConfig)
@@ -155,7 +200,7 @@ func assumeRole(ctx context.Context, svc *sts.Client, roleArn, roleSessionName *
 
 // assume-role into target account and write target profile into .aws/credentials
 func ensureTargetProfile(ctx context.Context, swampConfig *SwampConfig, pw *ProfileWriter, awsConfig aws.Config) {
-	svc := sts.NewFromConfig(awsConfig)
+	svc := newSTSClient(awsConfig, swampConfig.eusc)
 
 	userId := getCallerId(ctx, svc).Arn
 	parts := strings.Split(*userId, "/")

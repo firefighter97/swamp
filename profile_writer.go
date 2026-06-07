@@ -2,13 +2,14 @@ package main
 
 import (
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/service/sts/types"
-	"github.com/go-ini/ini"
-	"github.com/golang-utils/lockfile"
 	"os"
 	"os/user"
 	"path/filepath"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/sts/types"
+	"github.com/golang-utils/lockfile"
+	"gopkg.in/ini.v1"
 )
 
 type ProfileWriter struct {

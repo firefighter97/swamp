@@ -12,7 +12,7 @@ import (
 const (
 	INTERMEDIATE_SESSION_TOKEN_DURATION = int64(12 * 60 * 60)
 	TARGET_SESSION_TOKEN_DURATION       = int64(60 * 60)
-	VERSION                             = "0.14.0"
+	VERSION                             = "0.14.1"
 )
 
 type SwampConfig struct {
@@ -31,6 +31,7 @@ type SwampConfig struct {
 	exec                 string
 	mfaExec              string
 	quiet                bool
+	eusc                 bool
 }
 
 func NewSwampConfig() *SwampConfig {
@@ -49,20 +50,28 @@ func NewSwampConfig() *SwampConfig {
 		exec:                 "",
 		mfaExec:              "",
 		quiet:                false,
+		eusc:                 false,
 	}
 }
 
+func (config *SwampConfig) getProviderPrefix() string {
+	if config.eusc {
+		return "arn:aws-eusc:iam::"
+	}
+	return "arn:aws:iam::"
+}
+
 func (config *SwampConfig) isRoleArn() bool {
-	return strings.HasPrefix(config.targetRole, "arn:aws:iam::")
+	return strings.HasPrefix(config.targetRole, config.getProviderPrefix())
 }
 
 func (config *SwampConfig) GetRoleArn() *string {
 	if config.isRoleArn() {
 		return &config.targetRole
-	} else {
-		arn := fmt.Sprintf("arn:aws:iam::%s:role/%s", config.targetAccount, config.targetRole)
-		return &arn
 	}
+
+	arn := fmt.Sprintf("%s%s:role/%s", config.getProviderPrefix(), config.targetAccount, config.targetRole)
+	return &arn
 }
 
 func (config *SwampConfig) SetupFlags() {
@@ -77,6 +86,7 @@ func (config *SwampConfig) SetupFlags() {
 	flag.StringVar(&config.tokenSerialNumber, "mfa-device", config.tokenSerialNumber, "MFA device arn")
 	flag.BoolVar(&config.renew, "renew", config.renew, "Renew token every duration/2")
 	flag.BoolVar(&config.quiet, "quiet", config.quiet, "Suppress output")
+	flag.BoolVar(&config.eusc, "eusc", config.eusc, "Use EUSC Provider")
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 		// platform specific flags
 		flag.StringVar(&config.aliasConfig, "alias-config", config.aliasConfig, "Generate aliases from yaml `file`")
