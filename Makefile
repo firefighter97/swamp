@@ -15,8 +15,7 @@ arch=$(subst .exe,,$(word 3, $(temp)))
 
 all: test build
 
-#build: $(BINS)
-build: $(CGO1_BINS)
+build: $(BINS)
 
 install: $(LOCAL_BIN)
 	cp $(LOCAL_BIN) $(TARGET)/
